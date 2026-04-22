@@ -375,6 +375,13 @@ export default function PatientHeatMap() {
           competitors: addresses.filter(a => a.type === 'competitor').length,
           mapped: Object.keys(geocoded).length,
         });
+      } else if (detectedFormat === 'employee') {
+        // Coords already resolved server-side
+        for (const entry of addresses) {
+          const { address, cityStateZip, count, coords } = entry;
+          if (coords) geocoded[`${address}||${cityStateZip}`] = { coords, count, label: address || cityStateZip };
+        }
+        setStats({ total: rows, uniqueZips: addresses.length, mapped: Object.keys(geocoded).length });
       } else {
         for (const { address, cityStateZip, count } of addresses) {
           const zip = extractZip(cityStateZip);
@@ -465,12 +472,22 @@ export default function PatientHeatMap() {
                 </div>
               ))}
             </div>
-            <div>
+            <div style={{ marginBottom: 10 }}>
               <p style={{ color: '#374151', fontSize: 11, fontWeight: 600, margin: '0 0 4px' }}>Format B — Patient addresses</p>
               {[['City State Zip', '"ANDERSON SC 29621"'], ['Address', 'Patient street address']].map(([col, desc]) => (
                 <div key={col} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                   <div style={{ width: 5, height: 5, borderRadius: '50%', background: '#16a34a', flexShrink: 0 }} />
                   <span style={{ color: '#16a34a', fontSize: 12, fontFamily: 'monospace', width: 100 }}>{col}</span>
+                  <span style={{ color: '#6b7280', fontSize: 11 }}>{desc}</span>
+                </div>
+              ))}
+            </div>
+            <div>
+              <p style={{ color: '#374151', fontSize: 11, fontWeight: 600, margin: '0 0 4px' }}>Format C — Employee directory</p>
+              {[['Address Line 1...', 'Street address'], ['City, State Zip...', '"Indianapolis, IN 46235"']].map(([col, desc]) => (
+                <div key={col} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                  <div style={{ width: 5, height: 5, borderRadius: '50%', background: '#7c3aed', flexShrink: 0 }} />
+                  <span style={{ color: '#7c3aed', fontSize: 12, fontFamily: 'monospace', width: 100 }}>{col}</span>
                   <span style={{ color: '#6b7280', fontSize: 11 }}>{desc}</span>
                 </div>
               ))}
