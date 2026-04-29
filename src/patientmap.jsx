@@ -144,32 +144,42 @@ function HeatMap({ zipData, stats, fileName, onReset, format }) {
   const [opacity,  setOpacity]        = useState(0.8);
   const [hoveredKey, setHoveredKey]   = useState(null);
   const [showHeat, setShowHeat]       = useState(true);
-  const [showMarkers, setShowMarkers] = useState(format === 'primary-competitor');
-
+  const [showMarkers, setShowMarkers] = useState(false);
   const mapPoints = Object.entries(zipData).map(([key, val]) => ({ key, ...val }));
   const maxCount  = mapPoints.length ? Math.max(...mapPoints.map(p => p.count)) : 1;
 
-  const buildHeatData = () =>
-    mapPoints
+  // Use refs so effects always get fresh values without re-running on every render
+  const mapPointsRef = useRef(mapPoints);
+  const maxCountRef  = useRef(maxCount);
+  useEffect(() => { mapPointsRef.current = mapPoints; maxCountRef.current = maxCount; });
+
+  const buildHeatLayer = useCallback((map, r, o) => {
+    const pts = mapPointsRef.current;
+    const mx  = maxCountRef.current;
+    const data = pts
       .filter(p => format !== 'primary-competitor' || p.type === 'primary')
       .map(({ coords, count }) => [coords[0], coords[1], count]);
-
-  const buildHeatLayer = (map, r, o) => {
-    const data = buildHeatData();
     if (!data.length) return null;
     const heat = window.L.heatLayer(data, {
-      radius: r, blur: 25, maxZoom: 17, max: maxCount, minOpacity: 0.3,
+      radius: r, blur: 25, maxZoom: 17, max: mx,
+      minOpacity: Math.max(0.1, o * 0.3),
       gradient: { 0.1: '#bfdbfe', 0.3: '#3b82f6', 0.5: '#1d4ed8', 0.65: '#eab308', 0.8: '#f97316', 1.0: '#ef4444' },
     }).addTo(map);
-    if (heat._canvas) heat._canvas.style.opacity = o;
+  
+    // ✅ Wait one tick — _canvas is null until Leaflet finishes its async render
+    setTimeout(() => {
+      if (heat._canvas) heat._canvas.style.opacity = o;
+    }, 0);
+  
     return heat;
-  };
+  }, [format]);
 
-  const addMarkers = (map) => {
+  const addMarkers = useCallback((map) => {
+    const pts = mapPointsRef.current;
     markersRef.current.forEach(m => map.removeLayer(m));
     markersRef.current = [];
-    mapPoints.forEach(({ coords, label, name, count, type }) => {
-      const color = type === 'primary' ? '#2563eb' : '#dc2626';
+    pts.forEach(({ coords, label, name, count, type }) => {
+      const color = type === 'competitor' ? '#dc2626' : '#2563eb';
       const marker = window.L.marker(coords, { icon: makeIcon(color) })
         .addTo(map)
         .bindPopup(`<div style="font-family:sans-serif;min-width:160px">
@@ -181,39 +191,46 @@ function HeatMap({ zipData, stats, fileName, onReset, format }) {
           </div></div>`);
       markersRef.current.push(marker);
     });
+  }, []);
+
+// 1) Mount the map only — no heat/markers here
+useEffect(() => {
+  loadLeaflet().then(() => {
+    if (!mapRef.current || leafletMap.current) return;
+    const pts = mapPointsRef.current;
+    const center = pts.length
+      ? [pts.reduce((s,p)=>s+p.coords[0],0)/pts.length, pts.reduce((s,p)=>s+p.coords[1],0)/pts.length]
+      : [34.85, -82.39];
+    const map = window.L.map(mapRef.current, { zoomControl: true }).setView(center, 9);
+    leafletMap.current = map;
+    window.L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+      attribution: '&copy; OpenStreetMap contributors &copy; CARTO', subdomains: 'abcd', maxZoom: 19,
+    }).addTo(map);
+    setMapReady(true);
+  });
+  return () => {
+    if (leafletMap.current) {
+      leafletMap.current.remove();
+      leafletMap.current = null;
+      heatLayer.current = null;
+      markersRef.current = [];
+    }
   };
+}, [zipData]);
 
-  useEffect(() => {
-    loadLeaflet().then(() => {
-      if (!mapRef.current || leafletMap.current) return;
-      const center = mapPoints.length
-        ? [mapPoints.reduce((s,p)=>s+p.coords[0],0)/mapPoints.length, mapPoints.reduce((s,p)=>s+p.coords[1],0)/mapPoints.length]
-        : [34.85, -82.39];
-      const map = window.L.map(mapRef.current, { zoomControl: true }).setView(center, 9);
-      leafletMap.current = map;
-      window.L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-        attribution: '&copy; OpenStreetMap contributors &copy; CARTO', subdomains: 'abcd', maxZoom: 19,
-      }).addTo(map);
-      if (showHeat) heatLayer.current = buildHeatLayer(map, radius, opacity);
-      if (showMarkers && format === 'primary-competitor') addMarkers(map);
-      setMapReady(true);
-    });
-    return () => {
-      if (leafletMap.current) { leafletMap.current.remove(); leafletMap.current = null; heatLayer.current = null; markersRef.current = []; }
-    };
-  }, [zipData]);
-
+  // 2) Heat layer — runs after map is ready AND whenever heat settings change
   useEffect(() => {
     if (!leafletMap.current || !mapReady) return;
     if (heatLayer.current) { leafletMap.current.removeLayer(heatLayer.current); heatLayer.current = null; }
     if (showHeat) heatLayer.current = buildHeatLayer(leafletMap.current, radius, opacity);
-  }, [radius, opacity, showHeat, mapReady]);
+  }, [radius, opacity, showHeat, mapReady, buildHeatLayer]);
 
+  // 3) Markers — runs after map is ready AND whenever showMarkers changes
   useEffect(() => {
-    if (!leafletMap.current || !mapReady || format !== 'primary-competitor') return;
+    if (!leafletMap.current || !mapReady) return;
     if (showMarkers) { addMarkers(leafletMap.current); }
     else { markersRef.current.forEach(m => leafletMap.current.removeLayer(m)); markersRef.current = []; }
-  }, [showMarkers, mapReady]);
+  }, [showMarkers, mapReady, addMarkers]);
 
   return (
     <div style={{ minHeight: '100vh', background: '#f8fafc', display: 'flex', flexDirection: 'column', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }}>
@@ -248,18 +265,36 @@ function HeatMap({ zipData, stats, fileName, onReset, format }) {
         <aside style={{ width: 260, background: '#ffffff', borderRight: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', overflow: 'hidden', flexShrink: 0 }}>
           <div style={{ padding: '16px 16px 12px', borderBottom: '1px solid #f1f5f9' }}>
             <p style={{ color: '#94a3b8', fontSize: 10, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', margin: '0 0 14px' }}>Controls</p>
-            <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
-              <button onClick={() => setShowHeat(v => !v)}
-                style={{ flex: 1, padding: '5px 0', borderRadius: 7, border: `1px solid ${showHeat ? '#2563eb' : '#e2e8f0'}`, background: showHeat ? '#eff6ff' : '#f9fafb', color: showHeat ? '#2563eb' : '#94a3b8', fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
-                Heatmap
-              </button>
-              {format === 'primary-competitor' && (
-                <button onClick={() => setShowMarkers(v => !v)}
-                  style={{ flex: 1, padding: '5px 0', borderRadius: 7, border: `1px solid ${showMarkers ? '#2563eb' : '#e2e8f0'}`, background: showMarkers ? '#eff6ff' : '#f9fafb', color: showMarkers ? '#2563eb' : '#94a3b8', fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
-                  Markers
-                </button>
-              )}
-            </div>
+           <div style={{ display: 'flex', gap: 0, marginBottom: 14, border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'hidden' }}>
+  {[
+    { id: 'heat',  label: '🌡 Heatmap' },
+    { id: 'pins',  label: '📍 Pins' },
+    { id: 'both',  label: '⊕ Both' },
+  ].map(({ id, label }) => {
+    const mode = showHeat && showMarkers ? 'both' : showHeat ? 'heat' : 'pins';
+    const active = mode === id;
+    return (
+      <button
+        key={id}
+        onClick={() => {
+          setShowHeat(id === 'heat' || id === 'both');
+          setShowMarkers(id === 'pins' || id === 'both');
+        }}
+        style={{
+          flex: 1, padding: '7px 0', border: 'none',
+          borderRight: id !== 'both' ? '1px solid #e2e8f0' : 'none',
+          background: active ? '#eff6ff' : '#f9fafb',
+          color: active ? '#2563eb' : '#94a3b8',
+          fontSize: 11, fontWeight: active ? 700 : 500,
+          cursor: 'pointer', fontFamily: 'inherit',
+          transition: 'all 0.15s',
+        }}
+      >
+        {label}
+      </button>
+    );
+  })}
+</div>
             <div style={{ marginBottom: 14 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
                 <span style={{ color: '#374151', fontSize: 12 }}>Heat radius</span>
